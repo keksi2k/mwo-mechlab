@@ -1,0 +1,29 @@
+{
+  "name": "mwo-helper",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "setup": "node packages/extractor/src/setup.ts",
+    "extract": "node packages/extractor/src/cli.ts",
+    "dev": "node scripts/dev.ts",
+    "server": "node --watch packages/server/src/main.ts",
+    "web": "npm run dev -w @mwo/web",
+    "build": "npm run build -w @mwo/web",
+    "test": "node --test tests/*.test.ts",
+    "e2e": "node scripts/e2e.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@types/yauzl": "^3.4.0",
+    "typescript": "^7.0.2"
+  }
+}

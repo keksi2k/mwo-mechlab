@@ -1,0 +1,1 @@
+{"name":"@mwo/extractor","version":"0.1.0","private":true,"type":"module","exports":"./src/index.ts","dependencies":{"fast-xml-parser":"^5.12.0","yauzl":"^3.4.0"}}

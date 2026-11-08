@@ -1,0 +1,6 @@
+node_modules/
+dist/
+# extracted game data, saved builds and the local game folder
+data/
+release/
+*.log
