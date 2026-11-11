@@ -2,6 +2,8 @@
 
 Local mechlab with an extended quirk search for MechWarrior Online. All data comes from your own game installation, which is only ever read.
 
+> Unofficial fan project, not affiliated with or endorsed by Piranha Games, Microsoft or Topps. MechWarrior, BattleTech and MechWarrior Online are trademarks of their respective owners. This repository contains no game data or assets; everything is read locally from your own installation.
+
 ## Start
 
 On Windows, double-click `start.bat`. It checks Node.js (24 or newer, offers to install it otherwise), installs the dependencies on first start, extracts the game data if there is none yet, starts both servers and opens the browser.
@@ -47,6 +49,8 @@ npm run e2e         # browser test with local Chrome; starts its own servers and
 npm run typecheck
 ```
 
+`npm test` and `npm run e2e` need extracted game data, so run `npm run extract` with your own installation first.
+
 ## What is estimated
 
 Everything that is not directly in the game data is collected in `ASSUMPTIONS` in `packages/shared/src/rules.ts`.
@@ -58,3 +62,7 @@ Everything that is not directly in the game data is collected in `ASSUMPTIONS` i
 - **Skill tree:** the mechlab only counts nodes; the connected path through the tree is not checked. The categories are inferred from the tree's columns.
 - **Not calculated:** ghost heat, Ultra AC double shot, DPS of flamers and rocket launchers.
 - **Left out:** `all_*` quirks only count in the search on request and never for AMS, because it is unverified whether they apply there.
+
+## License
+
+The code is under the [MIT License](LICENSE). This covers only the code in this repository, not the game data it reads. Don't publish the contents of `data/`.
