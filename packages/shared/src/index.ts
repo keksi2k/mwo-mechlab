@@ -6,3 +6,5 @@ export * from './search.ts';
 export * from './catalog.ts';
 export * from './weapons.ts';
 export * from './buildcode.ts';
+export * from './alpha.ts';
+export * from './diff.ts';

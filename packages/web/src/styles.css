@@ -203,7 +203,8 @@ td { padding: 6px 8px; border-bottom: 1px solid #262c35; }
   .filters { position: static; max-height: none; }
   main { padding: 10px 16px; }
   .topbar { gap: 0 10px; flex-wrap: wrap; height: auto; }
-  .topbar nav { height: 46px; }
+  .topbar nav { height: 46px; min-width: 0; max-width: 100%; overflow-x: auto; scrollbar-width: none; }
+  .topbar nav a { padding: 0 8px; white-space: nowrap; }
   .build-info { display: none; }
   .lang { margin-left: auto; }
 }
@@ -213,3 +214,21 @@ td { padding: 6px 8px; border-bottom: 1px solid #262c35; }
 .sort-head { background: none; border: 0; padding: 0; font: inherit; color: inherit; cursor: pointer; white-space: nowrap; }
 .sort-head:hover, .sort-head.on { color: var(--accent); }
 .weapons-table .base-row td { background: var(--panel-2); font-size: 12px; }
+
+.alpha-progress { width: 100%; max-width: 480px; margin: 8px 0; }
+.weapon-chip { display: inline-block; margin: 0 10px 2px 0; white-space: nowrap; }
+.code-text { word-break: break-all; font-size: 12px; }
+.ghost-groups { margin-top: 8px; }
+.ghost-groups ul { margin: 4px 0 0; padding-left: 18px; }
+.patches section { margin-top: 18px; }
+.patches ul li { margin: 2px 0; }
+.range-chart { grid-column: 1 / -1; }
+.chart-wrap { position: relative; max-width: 760px; }
+.chart-wrap svg { width: 100%; height: auto; display: block; touch-action: none; }
+.chart-wrap .grid { stroke: var(--line); stroke-width: 1; opacity: .6; }
+.chart-wrap .baseline { stroke: var(--muted); stroke-width: 1; }
+.chart-wrap .axis { fill: var(--muted); font-size: 11px; }
+.chart-wrap .series { fill: none; stroke: var(--accent); stroke-width: 2; stroke-linejoin: round; }
+.chart-wrap .crosshair { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 3; }
+.chart-wrap .marker { fill: var(--accent); stroke: var(--panel); stroke-width: 2; }
+.chart-tip { position: absolute; top: 4px; transform: translateX(-50%); background: var(--panel-2); border: 1px solid var(--line); border-radius: 4px; padding: 2px 8px; font-size: 12px; pointer-events: none; white-space: nowrap; }

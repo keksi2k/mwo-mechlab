@@ -10,7 +10,11 @@ interface Row { saved: SavedBuild; analysis: Analysis | null }
 const METRICS: { label: UiKey; get: (a: Analysis) => number; digits: number; lower?: boolean }[] = [
   { label: 'stat.alpha', get: (a) => a.alpha, digits: 1 },
   { label: 'stat.dps', get: (a) => a.dps, digits: 2 },
+  { label: 'stat.dps-double', get: (a) => a.dpsDoubleShot, digits: 2 },
   { label: 'stat.hps', get: (a) => a.hps, digits: 2, lower: true },
+  { label: 'stat.alpha-heat', get: (a) => a.heat.alphaTotal, digits: 1, lower: true },
+  { label: 'stat.heat-peak', get: (a) => a.heat.peakShare * 100, digits: 1, lower: true },
+  { label: 'stat.alphas', get: (a) => a.heat.alphasToOverheat, digits: 0 },
   { label: 'stat.cooling', get: (a) => a.cooling, digits: 2 },
   { label: 'stat.capacity', get: (a) => a.heatCapacity, digits: 1 },
   { label: 'stat.speed', get: (a) => a.speed, digits: 1 },
@@ -107,6 +111,14 @@ export function BuildsPage({ catalog }: { catalog: Catalog }) {
                     </tr>
                   );
                 })}
+                <tr>
+                  <td>{t('weapons.title')}</td>
+                  {selected.map((r) => (
+                    <td key={r.saved.id} className="small-text">
+                      {r.analysis!.weapons.map((w) => <div key={w.weapon.id}><span className={`dot hp-${w.weapon.hardpoint}`} />{w.count}× {w.weapon.label}</div>)}
+                    </td>
+                  ))}
+                </tr>
               </tbody>
             </table>
           </div>

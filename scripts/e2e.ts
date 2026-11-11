@@ -27,6 +27,7 @@ const sandbox = mkdtempSync(join(tmpdir(), 'mwo-e2e-data-'));
 const env = {
   ...process.env, PORT: String(API_PORT), MWO_API_PORT: String(API_PORT),
   MWO_USER_DB: join(sandbox, 'user.sqlite'), MWO_VITE_CACHE: join(sandbox, 'vite-cache'),
+  MWO_ALPHA_CACHE: join(sandbox, 'alpha'), MWO_ALPHA_ONLY: 'bsk-3,as7-d,hbk-4g',
 };
 const servers: ChildProcess[] = [
   spawn(process.execPath, ['packages/server/src/main.ts'], { stdio: 'ignore', env }),
@@ -164,7 +165,8 @@ try {
   await waitFor(`[...document.querySelectorAll('.results-table .row')].length === 1 && document.querySelector('.results-table .row').textContent.includes('KIT FOX')`, 'Kit Fox');
   await js(`document.querySelector('.results-table .row button.primary').click()`);
   await waitFor(`document.querySelector('.comp-grid')`, 'Mechlab');
-  assert.ok((await js<string>('location.hash')).includes('pods='), 'pods in the URL');
+  // The address bar switches from the pods of the search to the build code, which contains the pods
+  assert.ok(/pods=|code=/.test(await js<string>('location.hash')), 'build in the URL');
   await waitFor(`[...document.querySelectorAll('.quirks h4')].length > 0`, 'Quirks');
   await shot('3-mechlab-kitfox');
   step(`Mechlab opens an omnimech from the search: ${await js<string>('location.hash')}`);
@@ -321,6 +323,52 @@ try {
   await js(`[...document.querySelectorAll('.lang button')].find((b) => b.textContent === 'EN').click()`);
   await waitFor(`[...document.querySelectorAll('.topbar nav a')].some((a) => a.textContent === 'Quirk search')`, 'back to English');
   step('Language: search in German, choice is saved, back to English');
+
+  // Heat, ghost heat and range chart in the mechlab; the address bar keeps the build, undo works
+  await send('Page.navigate', { url: `${BASE}/#/mechlab/as7-d` });
+  await waitFor(`document.querySelector('.lab-head h2')?.textContent === 'ATLAS AS7-D'`, 'AS7-D');
+  assert.equal(await stat('Alpha heat'), '23.2');
+  assert.ok(await js<boolean>(`!!document.querySelector('.range-chart svg path.series')`), 'range chart');
+  await js(`document.querySelector('.weapons').scrollIntoView()`);
+  await shot('13-heat-and-range');
+  await waitFor(`location.hash.includes('code=')`, 'build code in the address bar');
+  await clickText('.lab-actions button', 'Strip all');
+  await waitFor(`document.querySelector('.weapons')?.textContent.includes('No weapons installed')`, 'stripped');
+  await js('window.__beforeReload = true');
+  await send('Page.reload');
+  await waitFor(`!window.__beforeReload && document.querySelector('.weapons')?.textContent.includes('No weapons installed')`, 'stripped build survives a reload');
+  await clickText('.lab-actions button', 'Max armor');
+  await waitFor(`document.querySelector('.stats').textContent.includes('614 / 614')`, 'max armor');
+  await js(`document.querySelector('.lab-actions button[aria-label="Undo"]').click()`);
+  await waitFor(`!document.querySelector('.stats').textContent.includes('614 / 614')`, 'undo');
+  await js(`document.querySelector('.lab-actions button[aria-label="Redo"]').click()`);
+  await waitFor(`document.querySelector('.stats').textContent.includes('614 / 614')`, 'redo');
+  const coolingBefore = await stat('Cooling/s');
+  await clickText('.lab-actions button', 'Fill heat sinks');
+  await waitFor(`[...document.querySelectorAll('.stat')].find((s) => s.querySelector('.stat-label').textContent === 'Cooling/s').querySelector('.stat-value').textContent !== ${JSON.stringify(coolingBefore)}`, 'more cooling');
+  assert.equal(await issues(), '', 'filled build is valid');
+  step('Mechlab: heat values, range chart, build in the address bar, undo and redo, fill heat sinks');
+
+  // Max alpha page: computed in the background for a few mechs
+  await send('Page.navigate', { url: `${BASE}/#/alpha` });
+  await waitFor(`document.querySelectorAll('.results-table .row').length === 3`, 'alpha ranking', 120000);
+  const top = await js<string>(`document.querySelector('.results-table .row .mech-name').textContent + ' ' + document.querySelector('.results-table .row td.sorted').textContent`);
+  assert.equal(top, 'BULLSHARK BSK-3 188.5');
+  await shot('12-alpha');
+  await js(`document.querySelector('.results-table .row button.primary').click()`);
+  await waitFor(`document.querySelector('.lab-head h2')?.textContent === 'BULLSHARK BSK-3' && document.querySelector('.stats')`, 'BSK-3 from the ranking');
+  assert.equal(await stat('Alpha'), '188.5');
+  assert.equal(await issues(), '', 'ranked build is valid');
+  step(`Max alpha: ${top}, opens valid in the mechlab`);
+
+  await clickText('.lab-actions button', 'Stock');
+  await clickText('.lab-actions button', 'Max clean alpha');
+  await waitFor(`document.querySelector('.lab-actions')?.textContent.includes('Alpha 188.5 without overheating')`, 'optimizer in the mechlab', 30000);
+  step('Mechlab optimizer finds 188.5 on the BSK-3');
+
+  await send('Page.navigate', { url: `${BASE}/#/patches` });
+  await waitFor(`document.querySelector('.patches p')?.textContent.includes('Only one game version')`, 'patch page with one version');
+  step('Patch changes: hint with only one version');
 
   // Narrow view: no horizontal page scrollbar
   await send('Emulation.setDeviceMetricsOverride', { width: 420, height: 900, deviceScaleFactor: 1, mobile: false });

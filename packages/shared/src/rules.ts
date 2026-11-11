@@ -21,11 +21,32 @@ export const ASSUMPTIONS = {
   baseHeatCapacity: 30,
   /** Measured in game (AS7-D, cooling 3.30: about 7.1 s down to 0 %); map temperature is not taken into account */
   freeEngineHeatSinks: 10,
-  /** Observed by the player in game. Whether AMS counts is open: crd-cr and lgb-oh have 16 hardpoints plus 1 AMS. */
+  /** Confirmed by the player in game: at most 16 weapons, AMS included */
   maxWeapons: 16,
   /** Confirmed by the player: maximum number of skill nodes */
   maxSkillNodes: 91,
+  /**
+   * Ghost heat scale, read from MWOClient.exe (not in the XML data). The N-th weapon of a heat penalty group fired
+   * together produces heat × (1 + scale[N-1] × heatpenalty) once N reaches the group's threshold (`minheatpenaltylevel`).
+   * Confirmed in game: 3 Snub-Nose PPC on the AS7-D (56 %), heat quirks also lower the penalty.
+   * Unverified: mixed weapons in one group (assumed: lowest threshold of the group, weapons with the smallest penalty first),
+   * more than 12 weapons (the last value is kept), weapons with a penalty but no group ID (assumed: their own group).
+   */
+  ghostHeatScale: [0, 0.08, 0.18, 0.3, 0.45, 0.6, 0.8, 1.1, 1.5, 2, 3, 5],
 } as const;
+
+/**
+ * Unverified estimate for the Ultra AC double shot: each cycle fires one shot plus `ShotsDuringCooldown` extra shots,
+ * each of which jams with `JammingChance` (after quirks); a jam costs `JammedTime`.
+ * Expected DPS = volley × (1 + s × (1 − p)) / (cooldown + s × p × jammed time).
+ */
+export function doubleShotDps(w: Weapon, volley: number, cycle: number, applicable: SourcedQuirk[]): number | null {
+  const extraShots = Number(w.stats['ShotsDuringCooldown'] ?? 0);
+  if (extraShots <= 0 || cycle <= 0) return null;
+  const jam = Math.min(1, Math.max(0, applyStat(Number(w.stats['JammingChance'] ?? 0), 'jamchance', applicable)));
+  const jammed = Number(w.stats['JammedTime'] ?? 0);
+  return volley * (1 + extraShots * (1 - jam)) / (cycle + extraShots * jam * jammed);
+}
 
 export interface GameIndex {
   items: Map<number, Item>;
@@ -229,6 +250,10 @@ export interface WeaponStats {
   velocity: number;
   dps: number;
   hps: number;
+  /** Expected DPS with Ultra AC double shot (estimate, see `doubleShotDps`); null for other weapons */
+  dpsDoubleShot: number | null;
+  /** Ghost heat: group, threshold after quirks and penalty factor; null without ghost heat */
+  ghost: { group: string; threshold: number; penalty: number } | null;
   sources: SourcedQuirk[];
 }
 
@@ -264,7 +289,10 @@ export interface Analysis {
   weaponCount: number;
   alpha: number;
   dps: number;
+  /** DPS with Ultra AC double shot (estimate); equals `dps` without Ultra ACs */
+  dpsDoubleShot: number;
   hps: number;
+  heat: HeatAnalysis;
   weapons: WeaponStats[];
   components: ComponentUsage[];
   quirks: SourcedQuirk[];
@@ -275,6 +303,79 @@ export interface Analysis {
 }
 
 const sum = (xs: number[]) => xs.reduce((a, b) => a + b, 0);
+
+export interface GhostGroup {
+  group: string;
+  /** Weapons fired together in this group */
+  count: number;
+  threshold: number;
+  /** Extra heat from ghost heat */
+  extra: number;
+  weapons: { weapon: Weapon; count: number }[];
+}
+
+export interface HeatAnalysis {
+  /** Heat of one alpha strike without ghost heat */
+  alphaBase: number;
+  /** Extra heat of one alpha strike from ghost heat */
+  ghost: number;
+  alphaTotal: number;
+  /** Share of the heat capacity after one alpha strike without cooling (1 = 100 %) */
+  alphaShare: number;
+  /**
+   * Estimated peak on the heat bar: beam weapons add their heat over their duration and cooling runs meanwhile.
+   * Stock AS7-D: 33.2 %, measured in game 32 %.
+   */
+  peakShare: number;
+  /** Alpha strikes in a row from 0 % before overheating, without cooling in between */
+  alphasToOverheat: number;
+  /** Seconds to cool down from one alpha strike back to 0 % */
+  coolAfterAlpha: number;
+  /** Seconds of firing every weapon on cooldown (no ghost heat, chain fire) until overheating; null if cooling keeps up */
+  timeToOverheat: number | null;
+  groups: GhostGroup[];
+}
+
+/** Ghost heat of firing the given weapons together. */
+export function ghostHeat(weapons: Pick<WeaponStats, 'weapon' | 'count' | 'heat' | 'ghost'>[]): { total: number; groups: GhostGroup[] } {
+  const scale = ASSUMPTIONS.ghostHeatScale;
+  const byGroup = new Map<string, typeof weapons>();
+  for (const w of weapons) {
+    if (!w.ghost || w.count <= 0) continue;
+    byGroup.set(w.ghost.group, [...(byGroup.get(w.ghost.group) ?? []), w]);
+  }
+  const groups: GhostGroup[] = [];
+  for (const [group, ws] of byGroup) {
+    const threshold = Math.min(...ws.map((w) => w.ghost!.threshold));
+    const shots = ws.flatMap((w) => Array<number>(w.count).fill(w.heat * w.ghost!.penalty)).sort((a, b) => a - b);
+    let extra = 0;
+    shots.forEach((heatTimesPenalty, i) => {
+      const n = i + 1;
+      if (n >= threshold) extra += heatTimesPenalty * scale[Math.min(n - 1, scale.length - 1)]!;
+    });
+    groups.push({ group, count: shots.length, threshold, extra, weapons: ws.map((w) => ({ weapon: w.weapon, count: w.count })) });
+  }
+  return { total: sum(groups.map((g) => g.extra)), groups };
+}
+
+export function heatAnalysis(combat: WeaponStats[], capacity: number, cooling: number, hps: number): HeatAnalysis {
+  const alphaBase = sum(combat.map((w) => w.heat * w.count));
+  const { total: ghost, groups } = ghostHeat(combat);
+  const alphaTotal = alphaBase + ghost;
+  // Heat over time is piecewise linear, so the peak lies at t = 0 or at the end of a beam.
+  const factor = alphaBase > 0 ? alphaTotal / alphaBase : 1;
+  const heatAt = (t: number) => sum(combat.map((w) => w.heat * w.count * factor * (w.duration > 0 ? Math.min(1, t / w.duration) : 1))) - cooling * t;
+  const peak = Math.max(heatAt(0), ...combat.filter((w) => w.duration > 0).map((w) => heatAt(w.duration)));
+  return {
+    alphaBase, ghost, alphaTotal,
+    alphaShare: capacity > 0 ? alphaTotal / capacity : 0,
+    peakShare: capacity > 0 ? peak / capacity : 0,
+    alphasToOverheat: alphaTotal > 0 ? Math.floor(capacity / alphaTotal + 1e-9) : Infinity,
+    coolAfterAlpha: cooling > 0 ? Math.min(alphaTotal, capacity) / cooling : Infinity,
+    timeToOverheat: hps > cooling ? capacity / (hps - cooling) : null,
+    groups,
+  };
+}
 
 export function applyStat(base: number, stat: string, quirks: SourcedQuirk[]): number {
   let add = 0;
@@ -317,10 +418,16 @@ export function weaponStatsFrom(w: Weapon, count: number, applicable: SourcedQui
     dps = volleyDamage(w, damage) / (cooldown + duration);
     hps = heat / (cooldown + duration);
   }
+  const dpsDoubleShot = dps > 0 && !isContinuous(w) ? doubleShotDps(w, volleyDamage(w, damage), cooldown + duration, applicable) : null;
+  const penalty = Number(w.stats['heatpenalty'] ?? 0);
+  const level = Number(w.stats['minheatpenaltylevel'] ?? 0);
+  const ghost = penalty > 0 && level > 0
+    ? { group: w.stats['heatPenaltyID'] ? `g${w.stats['heatPenaltyID']}` : `w${w.id}`, threshold: applyStat(level, 'minheatpenaltylevel', applicable), penalty }
+    : null;
   return {
     weapon: w, count, damage: volleyDamage(w, damage), heat, cooldown, duration,
     optimalRange: applyStat(w.optimalRange, 'range', applicable), maxRange: applyStat(w.maxRange, 'range', applicable),
-    velocity: applyStat(w.speed, 'velocity', applicable), dps, hps, sources: applicable,
+    velocity: applyStat(w.speed, 'velocity', applicable), dps, hps, dpsDoubleShot, ghost, sources: applicable,
   };
 }
 
@@ -534,6 +641,8 @@ export function analyze(build: Build, ix: GameIndex): Analysis {
   const speed = engine
     ? applyStat(engine.rating / mech.tons * mech.movement.maxSpeedFactor, 'mechtopspeed', quirks)
     : 0;
+  const heat = heatAnalysis(combat, heatCapacity, cooling, hps);
+  const dpsDoubleShot = sum(combat.map((w) => (w.dpsDoubleShot ?? w.dps) * w.count));
 
   const skillNodes = sum(ix.skills.filter((n) => skillAvailable(n, build, ix)).map((n) => Math.min(build.skills[n.group] ?? 0, n.names.length)));
   if (skillNodes > ASSUMPTIONS.maxSkillNodes) issues.push({ code: 'skills', params: { count: skillNodes, max: ASSUMPTIONS.maxSkillNodes } });
@@ -543,6 +652,64 @@ export function analyze(build: Build, ix: GameIndex): Analysis {
     mass: { structure, armor: armorTons, engine: engineTons, items: tonsItems, fixed: tonsFixed },
     armorPoints, armorMaxPoints, slotsUsed, slotsTotal, dynamicSlots, engine, speed,
     heatSinks: { total: inEngine + externalHs, inEngine },
-    cooling, heatCapacity, weaponCount, alpha, dps, hps, weapons, components: usage, quirks, issues, notes, skillNodes,
+    cooling, heatCapacity, weaponCount, alpha, dps, dpsDoubleShot, hps, heat, weapons, components: usage, quirks, issues, notes, skillNodes,
   };
+}
+
+/**
+ * Adds heat sinks of the build's type while weight and slots allow: first into the engine's own slots,
+ * then into the components with the most free slots. Existing problems of the build stay as they are.
+ */
+export function fillHeatSinks(build: Build, ix: GameIndex): Build {
+  const hsId = ix.upgrades.get(build.heatSinkType)?.compatibleHeatSink;
+  if (hsId === undefined) return build;
+  const issueKey = (a: Analysis) => a.issues.map((i) => `${i.code}|${i.component ?? ''}`).sort().join(',');
+  let current = build;
+  let a = analyze(current, ix);
+  const allowed = issueKey(a);
+  for (let guard = 0; guard < 100; guard++) {
+    const order = [...a.components].sort((x, y) => (x.name === 'centre_torso' ? -1 : y.name === 'centre_torso' ? 1 : (y.slotsTotal - y.slotsUsed) - (x.slotsTotal - x.slotsUsed)));
+    let added = false;
+    for (const u of order) {
+      const next = { ...current, items: { ...current.items, [u.name]: [...(current.items[u.name] ?? []), hsId] } };
+      const na = analyze(next, ix);
+      if (issueKey(na) === allowed) {
+        current = next;
+        a = na;
+        added = true;
+        break;
+      }
+    }
+    if (!added) break;
+  }
+  return current;
+}
+
+/**
+ * Alpha damage at a distance. Between the breakpoints of the game data (`Ranges`) the damage is interpolated linearly,
+ * beyond the last one it is 0. Range quirks stretch all breakpoints by the same factor as the maximum range.
+ */
+export function damageAtRange(weapons: WeaponStats[], range: number): number {
+  let total = 0;
+  for (const w of weapons) {
+    if (w.weapon.hardpoint === 'ams' || w.weapon.ranges.length === 0) continue;
+    const factor = w.weapon.maxRange > 0 ? w.maxRange / w.weapon.maxRange : 1;
+    const pts = w.weapon.ranges.map((p) => ({ at: p.start * factor, mod: p.modifier }));
+    let mod = 0;
+    for (let i = 0; i < pts.length; i++) {
+      const p = pts[i]!;
+      const next = pts[i + 1];
+      if (range < p.at) break;
+      if (!next) {
+        mod = range === p.at ? p.mod : 0;
+        break;
+      }
+      if (range <= next.at) {
+        mod = next.at > p.at ? p.mod + (next.mod - p.mod) * (range - p.at) / (next.at - p.at) : next.mod;
+        break;
+      }
+    }
+    total += w.damage * w.count * mod;
+  }
+  return total;
 }

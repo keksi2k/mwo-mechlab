@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { analyze, formatIssue, resolveSkillValue, skillAvailable, stockBuild, volleyDamage, type Build, type Weapon } from '@mwo/shared';
+import { analyze, damageAtRange, fillHeatSinks, formatIssue, resolveSkillValue, skillAvailable, stockBuild, volleyDamage, type Build, type Weapon } from '@mwo/shared';
 import { data, ix } from './helpers.ts';
 
 /** Stock mechs that are over the limit in the game itself; all others must be valid. */
@@ -192,4 +192,71 @@ test('Skills only change values when active', () => {
   const withSkill: Build = { ...base, skills: { Cooldown: 16 } };
   const cd = (b: Build) => analyze(b, ix).weapons.find((w) => w.weapon.name === 'MediumLaser')!.cooldown;
   assert.ok(cd(withSkill) < cd(base));
+});
+
+const weaponId = (name: string) => data.items.find((i) => i.kind === 'weapon' && i.name === name)!.id;
+const withoutWeapons = (variant: string): Build => {
+  const b = structuredClone(stockBuild(variant, ix));
+  for (const k of Object.keys(b.items)) b.items[k] = b.items[k]!.filter((id) => !['weapon', 'ammo'].includes(ix.items.get(id)!.kind));
+  return b;
+};
+
+test('Ghost heat: 3 Snub-Nose PPC on the AS7-D reach 56 % as in the game', () => {
+  const b = withoutWeapons('as7-d');
+  const snub = weaponId('SnubNosePPC');
+  for (const c of ['left_arm', 'right_arm', 'centre_torso']) b.items[c] = [...(b.items[c] ?? []), snub];
+  const a = analyze(b, ix);
+  assert.deepEqual(a.issues, []);
+  // The game shows 56 %, it apparently rounds down
+  assert.equal(Math.floor(a.heat.alphaShare * 100), 56);
+  assert.ok(a.heat.ghost > 0);
+  assert.equal(a.heat.groups.length, 1);
+  assert.equal(a.heat.groups[0]!.threshold, 3);
+});
+
+test('Ghost heat: two Snub-Nose PPC stay below the threshold', () => {
+  const b = withoutWeapons('as7-d');
+  const snub = weaponId('SnubNosePPC');
+  for (const c of ['left_arm', 'right_arm']) b.items[c] = [...(b.items[c] ?? []), snub];
+  assert.equal(analyze(b, ix).heat.ghost, 0);
+});
+
+test('Heat peak: stock AS7-D close to the measured 32 %', () => {
+  const a = analyze(stockBuild('as7-d', ix), ix);
+  assert.equal(a.heat.ghost, 0);
+  assert.ok(Math.abs(a.heat.peakShare - 0.32) < 0.015, String(a.heat.peakShare));
+  assert.ok(a.heat.alphaShare > a.heat.peakShare);
+});
+
+test('Ultra AC double shot is a separate estimate and leaves DPS unchanged', () => {
+  const b = withoutWeapons('as7-d');
+  b.items['right_torso'] = [...(b.items['right_torso'] ?? []), weaponId('UltraAutoCannon5')];
+  const a = analyze(b, ix);
+  const uac = a.weapons.find((w) => w.weapon.name === 'UltraAutoCannon5')!;
+  assert.ok(Math.abs(uac.dps - uac.damage / uac.cooldown) < 1e-9);
+  assert.ok(uac.dpsDoubleShot! > uac.dps && uac.dpsDoubleShot! < 2 * uac.dps);
+  assert.ok(a.dpsDoubleShot > a.dps);
+  const ml = analyze(stockBuild('as7-d', ix), ix);
+  assert.equal(ml.dpsDoubleShot, ml.dps);
+});
+
+test('Fill heat sinks uses the remaining weight without creating problems', () => {
+  const b = structuredClone(stockBuild('as7-d', ix));
+  b.items['left_torso'] = b.items['left_torso']!.filter((id) => ix.items.get(id)!.kind !== 'weapon');
+  const before = analyze(b, ix);
+  const filled = analyze(fillHeatSinks(b, ix), ix);
+  assert.deepEqual(filled.issues, []);
+  assert.ok(filled.heatSinks.total > before.heatSinks.total);
+  const hs = ix.items.get(ix.upgrades.get(b.heatSinkType)!.compatibleHeatSink!)!;
+  assert.ok(filled.tonsMax - filled.tonsUsed < hs.tons || filled.slotsUsed + filled.dynamicSlots + hs.slots > filled.slotsTotal);
+});
+
+test('Damage over range follows the breakpoints of the game data', () => {
+  const a = analyze(stockBuild('as7-d', ix), ix);
+  assert.ok(Math.abs(damageAtRange(a.weapons, 0) - a.weapons.filter((w) => w.weapon.ranges[0]!.modifier > 0).reduce((s, w) => s + w.damage * w.count * w.weapon.ranges[0]!.modifier, 0)) < 1e-9);
+  const ml = a.weapons.filter((w) => w.weapon.name === 'MediumLaser');
+  // Full damage up to the optimal range, half way to the maximum range half damage, nothing beyond
+  assert.equal(damageAtRange(ml, ml[0]!.optimalRange), ml[0]!.damage * ml[0]!.count);
+  assert.ok(Math.abs(damageAtRange(ml, (ml[0]!.optimalRange + ml[0]!.maxRange) / 2) - ml[0]!.damage * ml[0]!.count / 2) < 1e-9);
+  assert.equal(damageAtRange(ml, ml[0]!.maxRange + 1), 0);
 });

@@ -2,12 +2,14 @@ import { useEffect, useState } from 'react';
 import { LOCALES, type Locale } from '@mwo/shared';
 import { api, type Catalog } from './api.ts';
 import { getLocale, setLocale, t } from './i18n.ts';
+import { AlphaPage } from './AlphaPage.tsx';
 import { BuildsPage } from './BuildsPage.tsx';
 import { MechlabPage } from './MechlabPage.tsx';
+import { PatchesPage } from './PatchesPage.tsx';
 import { SearchPage } from './SearchPage.tsx';
 import { WeaponsPage } from './WeaponsPage.tsx';
 
-export interface Route { page: 'search' | 'weapons' | 'mechlab' | 'builds'; variant?: string; params: URLSearchParams }
+export interface Route { page: 'search' | 'weapons' | 'alpha' | 'mechlab' | 'builds' | 'patches'; variant?: string; params: URLSearchParams }
 
 function parseRoute(): Route {
   const [path = '', query = ''] = location.hash.replace(/^#\/?/, '').split('?');
@@ -15,6 +17,8 @@ function parseRoute(): Route {
   const params = new URLSearchParams(query);
   if (page === 'mechlab') return { page: 'mechlab', variant: variant ? decodeURIComponent(variant) : undefined, params };
   if (page === 'builds') return { page: 'builds', params };
+  if (page === 'alpha') return { page: 'alpha', params };
+  if (page === 'patches') return { page: 'patches', params };
   // 'waffen' and 'suche' are the old German routes, kept for saved links
   if (page === 'weapons' || page === 'waffen') return { page: 'weapons', params };
   return { page: 'search', params };
@@ -50,8 +54,10 @@ export function App() {
         <nav>
           <a className={route.page === 'search' ? 'active' : ''} href="#/search">{t('nav.search')}</a>
           <a className={route.page === 'weapons' ? 'active' : ''} href="#/weapons">{t('nav.weapons')}</a>
+          <a className={route.page === 'alpha' ? 'active' : ''} href="#/alpha">{t('nav.alpha')}</a>
           <a className={route.page === 'mechlab' ? 'active' : ''} href="#/mechlab">{t('nav.mechlab')}</a>
           <a className={route.page === 'builds' ? 'active' : ''} href="#/builds">{t('nav.builds')}</a>
+          <a className={route.page === 'patches' ? 'active' : ''} href="#/patches">{t('nav.patches')}</a>
         </nav>
         {catalog && <div className="build-info" title={t('app.extracted', { date: new Date(catalog.meta.extractedAt).toLocaleString(locale) })}>{t('app.gamedata', { version: catalog.meta.buildVersion })}</div>}
         <div className="lang" role="group" aria-label={t('app.language')}>
@@ -63,8 +69,10 @@ export function App() {
         {!catalog && !error && <div className="empty">{t('app.loading')}</div>}
         {catalog && route.page === 'search' && <SearchPage catalog={catalog} />}
         {catalog && route.page === 'weapons' && <WeaponsPage catalog={catalog} />}
+        {catalog && route.page === 'alpha' && <AlphaPage />}
         {catalog && route.page === 'mechlab' && <MechlabPage key={`${route.variant ?? ''}?${route.params}`} catalog={catalog} route={route} />}
         {catalog && route.page === 'builds' && <BuildsPage catalog={catalog} />}
+        {catalog && route.page === 'patches' && <PatchesPage />}
       </main>
     </div>
   );

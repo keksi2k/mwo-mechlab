@@ -1,11 +1,12 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  analyze, ASSUMPTIONS, buildFromDecoded, BuildCodeError, buildIndex, componentLabel, COMPONENTS, decodeBuildCode, encodeBuildCode, factionMatches, formatIssue, formatQuirkValue, formatSource, quirkLabel,
+  analyze, ASSUMPTIONS, bestAlpha, buildFromDecoded, BuildCodeError, buildIndex, componentLabel, COMPONENTS, decodeBuildCode, encodeBuildCode, factionMatches, fillHeatSinks, formatIssue, formatQuirkValue, formatSource, quirkLabel,
   HARDPOINT_TYPES, REAR_OF, resolveSkillValue, setArtemis, skillAvailable, stockBuild, volleyDamage,
   type Analysis, type Build, type Message, type ComponentUsage, type Engine, type GameIndex, type HardpointType, type Item, type Mech, type SkillNode, type Upgrade,
 } from '@mwo/shared';
 import { api, type Catalog, type MechDetail } from './api.ts';
 import { go, type Route } from './App.tsx';
+import { RangeChart } from './RangeChart.tsx';
 import { fixed, getLocale, msg, msgKey, num, t, type UiKey } from './i18n.ts';
 
 const LAYOUT: (typeof COMPONENTS)[number][] = ['left_arm', 'left_torso', 'centre_torso', 'right_torso', 'right_arm', 'left_leg', 'head', 'right_leg'];
@@ -32,13 +33,46 @@ function parsePods(params: URLSearchParams): Record<string, number> {
   return out;
 }
 
+/** Skills are not part of the game's build code, so the URL carries them separately: `group:count,...` */
+function parseSkills(params: URLSearchParams): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const part of (params.get('skills') ?? '').split(',')) {
+    const [g, n] = part.split(':');
+    if (g && n && Number(n) > 0) out[g] = Number(n);
+  }
+  return out;
+}
+
+/** Keeps the current build in the address bar without reloading the page, so a reload or a copied link shows the same build. */
+function syncUrl(build: Build, mech: Mech, ix: GameIndex, savedId: string | null) {
+  const code = encodeBuildCode(build, mech, ix);
+  if (code.code === null) return;
+  const params = new URLSearchParams();
+  if (savedId) params.set('build', savedId);
+  params.set('code', code.code);
+  const skills = Object.entries(build.skills).filter(([, n]) => n > 0).map(([g, n]) => `${g}:${n}`).join(',');
+  if (skills || savedId) params.set('skills', skills);
+  const hash = `#/mechlab/${mech.variant}?${params}`;
+  if (location.hash !== hash) history.replaceState(null, '', hash);
+}
+
+/** Undo and redo for the build */
+function useHistory() {
+  const [state, setState] = useState<{ past: Build[]; present: Build | null; future: Build[] }>({ past: [], present: null, future: [] });
+  const set = useCallback((b: Build) => setState((s) => (s.present === b ? s : { past: s.present ? [...s.past, s.present].slice(-100) : s.past, present: b, future: [] })), []);
+  const reset = useCallback((b: Build) => setState({ past: [], present: b, future: [] }), []);
+  const undo = useCallback(() => setState((s) => (s.past.length && s.present ? { past: s.past.slice(0, -1), present: s.past.at(-1)!, future: [s.present, ...s.future] } : s)), []);
+  const redo = useCallback(() => setState((s) => (s.future.length && s.present ? { past: [...s.past, s.present], present: s.future[0]!, future: s.future.slice(1) } : s)), []);
+  return { build: state.present, set, reset, undo, redo, canUndo: state.past.length > 0, canRedo: state.future.length > 0 };
+}
+
 /** Opens the mech from a build code in the mechlab. Returns an error message if that is not possible. */
 function openBuildCode(code: string, catalog: Catalog): string | null {
   try {
     const decoded = decodeBuildCode(code);
     const mech = catalog.mechs.find((m) => m.id === decoded.mechId);
     if (!mech) return t('lab.mech-id-unknown', { id: String(decoded.mechId) });
-    go(`#/mechlab/${mech.variant}?code=${encodeURIComponent(code.trim())}`);
+    go(`#/mechlab/${mech.variant}?imported=1&code=${encodeURIComponent(code.trim())}`);
     return null;
   } catch (e) {
     return e instanceof BuildCodeError ? msg(e.detail) : (e as Error).message;
@@ -47,7 +81,8 @@ function openBuildCode(code: string, catalog: Catalog): string | null {
 
 export function MechlabPage({ catalog, route }: { catalog: Catalog; route: Route }) {
   const [detail, setDetail] = useState<MechDetail | null>(null);
-  const [build, setBuild] = useState<Build | null>(null);
+  const buildHistory = useHistory();
+  const resetBuild = buildHistory.reset;
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState<{ id: string; name: string } | null>(null);
   const [importWarnings, setImportWarnings] = useState<Message[]>([]);
@@ -63,13 +98,6 @@ export function MechlabPage({ catalog, route }: { catalog: Catalog; route: Route
       const ix = buildCatalogIndex(catalog, d);
       let b = stockBuild(d.mech.variant, ix);
       b = { ...b, pods: { ...b.pods, ...parsePods(route.params) } };
-      if (code) {
-        const decoded = decodeBuildCode(code);
-        if (decoded.mechId !== d.mech.id) throw new Error(t('lab.other-mech-code'));
-        const imported = buildFromDecoded(decoded, d.mech, ix);
-        b = imported.build;
-        setImportWarnings(imported.warnings);
-      }
       if (buildId) {
         const found = (await api.builds()).find((x) => x.id === buildId);
         if (found && found.variant === d.mech.variant) {
@@ -77,19 +105,29 @@ export function MechlabPage({ catalog, route }: { catalog: Catalog; route: Route
           setSaved({ id: found.id, name: found.name });
         }
       }
+      // A code in the address bar is the latest state, also of a saved build that was changed afterwards
+      if (code) {
+        const decoded = decodeBuildCode(code);
+        if (decoded.mechId !== d.mech.id) throw new Error(t('lab.other-mech-code'));
+        const imported = buildFromDecoded(decoded, d.mech, ix);
+        const skills = route.params.has('skills') ? parseSkills(route.params) : buildId ? b.skills : {};
+        b = { ...imported.build, skills };
+        // Only for a code the user imported, not for the one the address bar keeps up to date
+        if (route.params.has('imported')) setImportWarnings(imported.warnings);
+      }
       if (cancelled) return;
       setDetail(d);
-      setBuild(b);
+      resetBuild(b);
     })().catch((e: Error) => !cancelled && setError(e instanceof BuildCodeError ? msg(e.detail) : e.message));
     return () => {
       cancelled = true;
     };
-  }, [route.variant, route.params, buildId, code, catalog]);
+  }, [route.variant, route.params, buildId, code, catalog, resetBuild]);
 
   if (!route.variant) return <MechPicker catalog={catalog} />;
   if (error) return <div className="banner error">{error}</div>;
-  if (!detail || !build) return <div className="empty">{t('lab.loading')}</div>;
-  return <Lab catalog={catalog} detail={detail} build={build} setBuild={setBuild} saved={saved} setSaved={setSaved} importWarnings={importWarnings} />;
+  if (!detail || !buildHistory.build) return <div className="empty">{t('lab.loading')}</div>;
+  return <Lab catalog={catalog} detail={detail} build={buildHistory.build} setBuild={buildHistory.set} history={buildHistory} saved={saved} setSaved={setSaved} importWarnings={importWarnings} />;
 }
 
 function CodeImport({ catalog }: { catalog: Catalog }) {
@@ -157,8 +195,9 @@ function MechPicker({ catalog }: { catalog: Catalog }) {
   );
 }
 
-function Lab({ catalog, detail, build, setBuild, saved, setSaved, importWarnings }: {
+function Lab({ catalog, detail, build, setBuild, history: steps, saved, setSaved, importWarnings }: {
   catalog: Catalog; detail: MechDetail; build: Build; setBuild: (b: Build) => void;
+  history: { undo: () => void; redo: () => void; canUndo: boolean; canRedo: boolean };
   saved: { id: string; name: string } | null; setSaved: (s: { id: string; name: string } | null) => void; importWarnings: Message[];
 }) {
   const ix = useMemo(() => buildCatalogIndex(catalog, detail), [catalog, detail]);
@@ -170,6 +209,26 @@ function Lab({ catalog, detail, build, setBuild, saved, setSaved, importWarnings
   const [status, setStatus] = useState<string | null>(null);
   const mech = detail.mech;
   const usage = (c: string) => a.components.find((u) => u.name === c);
+  const { undo, redo } = steps;
+
+  useEffect(() => syncUrl(build, mech, ix, saved?.id ?? null), [build, mech, ix, saved]);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (target && ['INPUT', 'SELECT', 'TEXTAREA'].includes(target.tagName)) return;
+      if (!(e.ctrlKey || e.metaKey)) return;
+      const key = e.key.toLowerCase();
+      if (key === 'z' && !e.shiftKey) {
+        e.preventDefault();
+        undo();
+      } else if (key === 'y' || (key === 'z' && e.shiftKey)) {
+        e.preventDefault();
+        redo();
+      }
+    };
+    addEventListener('keydown', onKey);
+    return () => removeEventListener('keydown', onKey);
+  }, [undo, redo]);
 
   const addItem = (item: Item) => setBuild({ ...build, items: { ...build.items, [selected]: [...(build.items[selected] ?? []), item.id] } });
   const removeItem = (comp: string, index: number) => {
@@ -202,6 +261,20 @@ function Lab({ catalog, detail, build, setBuild, saved, setSaved, importWarnings
       } else armor[u.name] = u.armorMax;
     }
     setBuild({ ...build, armor });
+  };
+  const fillSinks = () => setBuild(fillHeatSinks(build, ix));
+  const optimizeAlpha = () => {
+    setStatus(t('lab.optimizing'));
+    // Let the status render before the search blocks the page for a moment
+    setTimeout(() => {
+      const r = bestAlpha(mech, ix);
+      if (!r) {
+        setStatus(t('lab.optimize-none'));
+        return;
+      }
+      setBuild({ ...r.build, skills: build.skills });
+      setStatus(t('lab.optimized', { alpha: fixed(r.a.alpha, 1) }));
+    }, 30);
   };
   const resetStock = () => {
     setBuild(stockBuild(mech.variant, ix));
@@ -258,6 +331,10 @@ function Lab({ catalog, detail, build, setBuild, saved, setSaved, importWarnings
           <button onClick={resetStock}>{t('lab.stock')}</button>
           <button onClick={stripWeapons}>{t('lab.strip')}</button>
           <button onClick={maxArmor}>{t('lab.max-armor')}</button>
+          <button onClick={fillSinks} title={t('lab.fill-sinks-hint')}>{t('lab.fill-sinks')}</button>
+          <button onClick={optimizeAlpha} title={t('lab.optimize-hint')}>{t('lab.optimize')}</button>
+          <button onClick={undo} disabled={!steps.canUndo} title={t('lab.undo-hint')} aria-label={t('lab.undo')}>↶</button>
+          <button onClick={redo} disabled={!steps.canRedo} title={t('lab.redo-hint')} aria-label={t('lab.redo')}>↷</button>
           <button onClick={() => go('#/mechlab')}>{t('lab.other-mech')}</button>
           {status && <span className="muted">{status}</span>}
         </div>
@@ -303,6 +380,7 @@ function Lab({ catalog, detail, build, setBuild, saved, setSaved, importWarnings
 
         <BuildCodePanel catalog={catalog} build={build} detail={detail} ix={ix} />
         <Weapons a={a} />
+        <RangeChart a={a} />
         <Quirks a={a} />
         <Skills catalog={catalog} build={build} setBuild={setBuild} a={a} ix={ix} mech={mech} />
       </div>
@@ -382,6 +460,8 @@ function ComponentCard({ u, selected, detail, build, onSelect, onRemove, onPod, 
   );
 }
 
+const pct = (share: number) => `${fixed(share * 100, 1)} %`;
+
 function Stat({ label, value, hint, bad }: { label: string; value: string; hint?: string; bad?: boolean }) {
   return <div className="stat" title={hint}><div className="stat-label">{label}</div><div className={`stat-value ${bad ? 'bad' : ''}`}>{value}</div></div>;
 }
@@ -399,6 +479,12 @@ function Stats({ a, tonsLeft }: { a: Analysis; tonsLeft: number }) {
       <Stat label={t('stat.hps')} value={fixed(a.hps, 2)} hint={t('stat.hps-hint')} />
       <Stat label={t('stat.cooling')} value={fixed(a.cooling, 2)} hint={t('stat.cooling-hint', { total: a.heatSinks.total, engine: a.heatSinks.inEngine })} />
       <Stat label={t('stat.capacity')} value={fixed(a.heatCapacity, 1)} hint={t('stat.capacity-hint')} />
+      {a.dpsDoubleShot > a.dps + 1e-9 && <Stat label={t('stat.dps-double')} value={fixed(a.dpsDoubleShot, 2)} hint={t('stat.dps-double-hint')} />}
+      <Stat label={t('stat.alpha-heat')} value={fixed(a.heat.alphaTotal, 1)} hint={t('stat.alpha-heat-hint', { base: fixed(a.heat.alphaBase, 1), ghost: fixed(a.heat.ghost, 1) })} bad={a.heat.ghost > 0} />
+      <Stat label={t('stat.heat-peak')} value={pct(a.heat.peakShare)} hint={t('stat.heat-peak-hint', { share: pct(a.heat.alphaShare) })} bad={a.heat.peakShare > 1} />
+      <Stat label={t('stat.alphas')} value={Number.isFinite(a.heat.alphasToOverheat) ? String(a.heat.alphasToOverheat) : '∞'} hint={t('stat.alphas-hint')} bad={a.heat.alphasToOverheat === 0} />
+      <Stat label={t('stat.cool-time')} value={Number.isFinite(a.heat.coolAfterAlpha) ? `${fixed(a.heat.coolAfterAlpha, 1)} s` : '–'} hint={t('stat.cool-time-hint')} />
+      <Stat label={t('stat.overheat-time')} value={a.heat.timeToOverheat === null ? t('stat.never') : `${fixed(a.heat.timeToOverheat, 1)} s`} hint={t('stat.overheat-time-hint')} />
     </div>
   );
 }
@@ -476,7 +562,7 @@ function Weapons({ a }: { a: Analysis }) {
       <h3>{t('weapons.title-quirks')}</h3>
       <div className="table-wrap">
         <table>
-          <thead><tr><th>{t('weapons.weapon')}</th><th className="num">×</th><th className="num">{t('weapons.damage')}</th><th className="num">{t('weapons.heat')}</th><th className="num">{t('weapons.cooldown')}</th><th className="num">{t('weapons.optimal')}</th><th className="num">{t('weapons.max')}</th><th className="num">{t('stat.dps')}</th></tr></thead>
+          <thead><tr><th>{t('weapons.weapon')}</th><th className="num">×</th><th className="num">{t('weapons.damage')}</th><th className="num">{t('weapons.heat')}</th><th className="num">{t('weapons.cooldown')}</th><th className="num">{t('weapons.optimal')}</th><th className="num">{t('weapons.max')}</th><th className="num">{t('stat.dps')}</th><th className="num" title={t('weapons.ghost-title')}>{t('weapons.ghost')}</th></tr></thead>
           <tbody>
             {a.weapons.map((w) => (
               <tr key={w.weapon.id} title={w.sources.map((s) => `${formatQuirkValue(s.quirk, getLocale())} ${quirkLabel(s.quirk, getLocale())} (${formatSource(s.source, getLocale())})`).join('\n') || t('weapons.no-quirks')}>
@@ -487,12 +573,28 @@ function Weapons({ a }: { a: Analysis }) {
                 <td className="num">{num(w.cooldown)}</td>
                 <td className="num">{Math.round(w.optimalRange)}</td>
                 <td className="num">{Math.round(w.maxRange)}</td>
-                <td className="num">{fixed(w.dps * w.count, 2)}</td>
+                <td className="num" title={w.dpsDoubleShot !== null ? t('weapons.double-title', { dps: fixed(w.dpsDoubleShot * w.count, 2) }) : undefined}>
+                  {fixed(w.dps * w.count, 2)}{w.dpsDoubleShot !== null && <span className="muted"> ({fixed(w.dpsDoubleShot * w.count, 2)})</span>}
+                </td>
+                <td className="num" title={w.ghost ? t('weapons.ghost-title') : t('weapons.ghost-none')}>{w.ghost ? num(w.ghost.threshold) : '–'}</td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
+      {a.heat.groups.some((g) => g.extra > 0) && (
+        <div className="ghost-groups small-text">
+          <strong>{t('weapons.ghost-groups')}</strong>
+          <ul>
+            {a.heat.groups.filter((g) => g.extra > 0).map((g) => (
+              <li key={g.group}>
+                {t('weapons.ghost-group', { weapons: g.weapons.map((w) => `${w.count}× ${w.weapon.label}`).join(', '), count: g.count, threshold: num(g.threshold), extra: fixed(g.extra, 1) })}
+                {g.weapons.length > 1 && <span className="muted"> {t('weapons.ghost-unverified')}</span>}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </section>
   );
 }
