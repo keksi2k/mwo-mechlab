@@ -19,7 +19,7 @@ const PICKER_TABS: { id: string; label: UiKey; kinds: Item['kind'][] }[] = [
 
 export function buildCatalogIndex(catalog: Catalog, detail: MechDetail): GameIndex {
   return buildIndex({
-    items: catalog.items, upgrades: catalog.upgrades, skills: catalog.skills,
+    meta: catalog.meta, items: catalog.items, upgrades: catalog.upgrades, skills: catalog.skills,
     mechs: [detail.mech], chassis: detail.chassis ? [detail.chassis] : [], loadouts: [detail.loadout],
   });
 }

@@ -26,13 +26,11 @@ export const ASSUMPTIONS = {
   /** Confirmed by the player: maximum number of skill nodes */
   maxSkillNodes: 91,
   /**
-   * Ghost heat scale, read from MWOClient.exe (not in the XML data). The N-th weapon of a heat penalty group fired
-   * together produces heat × (1 + scale[N-1] × heatpenalty) once N reaches the group's threshold (`minheatpenaltylevel`).
+   * Ghost heat: the scale is read from MWOClient.exe (`Meta.ghostHeatScale`).
    * Confirmed in game: 3 Snub-Nose PPC on the AS7-D (56 %), heat quirks also lower the penalty.
    * Unverified: mixed weapons in one group (assumed: lowest threshold of the group, weapons with the smallest penalty first),
-   * more than 12 weapons (the last value is kept), weapons with a penalty but no group ID (assumed: their own group).
+   * more weapons than the scale has values (the last value is kept), weapons with a penalty but no group ID (assumed: their own group).
    */
-  ghostHeatScale: [0, 0.08, 0.18, 0.3, 0.45, 0.6, 0.8, 1.1, 1.5, 2, 3, 5],
 } as const;
 
 /**
@@ -56,9 +54,13 @@ export interface GameIndex {
   pods: Map<number, Pod>;
   loadouts: Map<string, Loadout>;
   skills: SkillNode[];
+  /** From the game client; empty if unknown, then no ghost heat is calculated */
+  ghostHeatScale: readonly number[];
 }
 
-export function buildIndex(d: Pick<Dataset, 'items' | 'upgrades' | 'mechs' | 'chassis' | 'loadouts' | 'skills'>): GameIndex {
+export function buildIndex(
+  d: Pick<Dataset, 'items' | 'upgrades' | 'mechs' | 'chassis' | 'loadouts' | 'skills'> & { meta?: Pick<Dataset['meta'], 'ghostHeatScale'> },
+): GameIndex {
   const pods = new Map<number, Pod>();
   for (const c of d.chassis) for (const s of c.sets) for (const p of Object.values(s.pods)) for (const id of [p.id, ...p.aliasIds]) pods.set(id, p);
   return {
@@ -69,6 +71,7 @@ export function buildIndex(d: Pick<Dataset, 'items' | 'upgrades' | 'mechs' | 'ch
     pods,
     loadouts: new Map(d.loadouts.map((l) => [l.variant, l])),
     skills: d.skills,
+    ghostHeatScale: d.meta?.ghostHeatScale ?? [],
   };
 }
 
@@ -337,8 +340,7 @@ export interface HeatAnalysis {
 }
 
 /** Ghost heat of firing the given weapons together. */
-export function ghostHeat(weapons: Pick<WeaponStats, 'weapon' | 'count' | 'heat' | 'ghost'>[]): { total: number; groups: GhostGroup[] } {
-  const scale = ASSUMPTIONS.ghostHeatScale;
+export function ghostHeat(weapons: Pick<WeaponStats, 'weapon' | 'count' | 'heat' | 'ghost'>[], scale: readonly number[]): { total: number; groups: GhostGroup[] } {
   const byGroup = new Map<string, typeof weapons>();
   for (const w of weapons) {
     if (!w.ghost || w.count <= 0) continue;
@@ -351,16 +353,16 @@ export function ghostHeat(weapons: Pick<WeaponStats, 'weapon' | 'count' | 'heat'
     let extra = 0;
     shots.forEach((heatTimesPenalty, i) => {
       const n = i + 1;
-      if (n >= threshold) extra += heatTimesPenalty * scale[Math.min(n - 1, scale.length - 1)]!;
+      if (n >= threshold && scale.length > 0) extra += heatTimesPenalty * scale[Math.min(n - 1, scale.length - 1)]!;
     });
     groups.push({ group, count: shots.length, threshold, extra, weapons: ws.map((w) => ({ weapon: w.weapon, count: w.count })) });
   }
   return { total: sum(groups.map((g) => g.extra)), groups };
 }
 
-export function heatAnalysis(combat: WeaponStats[], capacity: number, cooling: number, hps: number): HeatAnalysis {
+export function heatAnalysis(combat: WeaponStats[], capacity: number, cooling: number, hps: number, scale: readonly number[]): HeatAnalysis {
   const alphaBase = sum(combat.map((w) => w.heat * w.count));
-  const { total: ghost, groups } = ghostHeat(combat);
+  const { total: ghost, groups } = ghostHeat(combat, scale);
   const alphaTotal = alphaBase + ghost;
   // Heat over time is piecewise linear, so the peak lies at t = 0 or at the end of a beam.
   const factor = alphaBase > 0 ? alphaTotal / alphaBase : 1;
@@ -641,7 +643,7 @@ export function analyze(build: Build, ix: GameIndex): Analysis {
   const speed = engine
     ? applyStat(engine.rating / mech.tons * mech.movement.maxSpeedFactor, 'mechtopspeed', quirks)
     : 0;
-  const heat = heatAnalysis(combat, heatCapacity, cooling, hps);
+  const heat = heatAnalysis(combat, heatCapacity, cooling, hps, ix.ghostHeatScale);
   const dpsDoubleShot = sum(combat.map((w) => (w.dpsDoubleShot ?? w.dps) * w.count));
 
   const skillNodes = sum(ix.skills.filter((n) => skillAvailable(n, build, ix)).map((n) => Math.min(build.skills[n.group] ?? 0, n.names.length)));

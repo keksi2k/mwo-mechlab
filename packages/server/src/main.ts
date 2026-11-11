@@ -13,6 +13,7 @@ import { buildDirs, DATA, latestDir, loadDataset } from './data.ts';
 const PORT = Number(process.env['PORT'] ?? 4680);
 
 function prepare(data: Dataset) {
+  if (!data.meta.ghostHeatScale?.length) console.warn('This game data has no ghost heat scale, ghost heat is not calculated. Run npm run extract again.');
   return {
     data,
     ix: buildIndex(data),

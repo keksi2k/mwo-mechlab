@@ -100,6 +100,7 @@ interface Config {
   fixedWeapons: number;
   fixedDamage: number;
   fixedHeat: number;
+  ghostHeatScale: readonly number[];
   candidates: Candidate[];
 }
 
@@ -113,11 +114,10 @@ const FULL_NODES = 150_000;
 /** Omnimechs: pod searches from this many of the best starting points */
 const OMNI_STARTS = 3;
 
-function ghostHeatSeries(heat: number, threshold: number, penalty: number, max: number): number[] {
-  const scale = ASSUMPTIONS.ghostHeatScale;
+function ghostHeatSeries(heat: number, threshold: number, penalty: number, max: number, scale: readonly number[]): number[] {
   const out = [0];
   for (let n = 1; n <= max; n++) {
-    const extra = penalty > 0 && n >= threshold ? heat * penalty * scale[Math.min(n - 1, scale.length - 1)]! : 0;
+    const extra = penalty > 0 && n >= threshold && scale.length > 0 ? heat * penalty * scale[Math.min(n - 1, scale.length - 1)]! : 0;
     out.push(out[n - 1]! + heat + extra);
   }
   return out;
@@ -180,7 +180,7 @@ function prepare(mech: Mech, build: Build, ix: GameIndex, opts: AlphaOptions, am
     if (st.damage <= 0 || st.optimalRange < (opts.minRange ?? 0)) continue;
     const ammo = item.ammoType ? (ammoByType.get(item.ammoType) ?? []).filter((a) => factionMatches(a.faction, mech.faction)).sort((x, y) => x.tons - y.tons)[0] ?? null : null;
     if (item.ammoType && !ammo) continue;
-    const series = ghostHeatSeries(st.heat, st.ghost?.threshold ?? Infinity, st.ghost?.penalty ?? 0, ASSUMPTIONS.maxWeapons);
+    const series = ghostHeatSeries(st.heat, st.ghost?.threshold ?? Infinity, st.ghost?.penalty ?? 0, ASSUMPTIONS.maxWeapons, ix.ghostHeatScale);
     candidates.push({
       weapon: item, damage: st.damage, heat: st.heat, tons: item.tons, slots: item.slots,
       group: st.ghost?.group ?? `w${item.id}`, heatOf: series, threshold: st.ghost?.threshold ?? Infinity, penalty: st.ghost?.penalty ?? 0,
@@ -210,6 +210,7 @@ function prepare(mech: Mech, build: Build, ix: GameIndex, opts: AlphaOptions, am
     fixedWeapons: fixedWeapons.reduce((s, w) => s + w.count, 0) + base.weapons.filter((w) => w.weapon.hardpoint === 'ams').reduce((s, w) => s + w.count, 0),
     fixedDamage: fixedWeapons.reduce((s, w) => s + w.damage * w.count, 0),
     fixedHeat: base.heat.alphaTotal,
+    ghostHeatScale: ix.ghostHeatScale,
     candidates: kept,
   };
 }
@@ -262,7 +263,7 @@ function mixedHeat(cfg: Config, cands: Candidate[], counts: number[]): number {
   const { total } = ghostHeat(chosen.map(({ c, count }) => ({
     weapon: c.weapon, count, heat: c.heat,
     ghost: c.penalty > 0 ? { group: c.group, threshold: c.threshold, penalty: c.penalty } : null,
-  })));
+  })), cfg.ghostHeatScale);
   return cfg.fixedHeat + chosen.reduce((s, { c, count }) => s + c.heat * count, 0) + total;
 }
 

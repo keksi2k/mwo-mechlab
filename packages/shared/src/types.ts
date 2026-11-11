@@ -206,6 +206,12 @@ export interface Meta {
   buildPlan: string;
   extractedAt: string;
   gameDir: string;
+  /**
+   * Ghost heat scale read from MWOClient.exe (not in the XML data); missing in data extracted by older versions.
+   * The N-th weapon of a heat penalty group fired together produces heat × (1 + scale[N-1] × heatpenalty)
+   * once N reaches the group's threshold (`minheatpenaltylevel`).
+   */
+  ghostHeatScale?: number[];
   counts: Record<string, number>;
   warnings: string[];
 }

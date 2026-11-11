@@ -6,6 +6,7 @@ import {
   type HardpointType, type InternalRef, type Item, type ItemBase, type Loadout, type Mech, type Pod, type PodSet,
   type Quirk, type SkillEffect, type SkillNode, type SkillOverride, type Upgrade, type Weapon,
 } from '@mwo/shared';
+import { clientExe, findGhostHeatScale } from './exe.ts';
 import { Pak } from './pak.ts';
 import { El, parseXml } from './xml.ts';
 
@@ -218,6 +219,10 @@ export async function extract(gameDir: string, log: (m: string) => void = () => 
     }
   }
 
+  log('MWOClient.exe …');
+  const ghostHeatScale = findGhostHeatScale(clientExe(gameDir)) ?? undefined;
+  if (!ghostHeatScale) warn('Ghost heat scale not found in Bin64/MWOClient.exe, ghost heat is not calculated');
+
   return {
     meta: {
       buildNumber: buildText('BuildNumber'),
@@ -225,6 +230,7 @@ export async function extract(gameDir: string, log: (m: string) => void = () => 
       buildPlan: buildText('BuildPlan'),
       extractedAt: new Date().toISOString(),
       gameDir,
+      ghostHeatScale,
       counts: {
         mechPaks: pakCount, mechs: mechs.length, loadouts: loadouts.length, omniChassis: chassis.length,
         weapons: items.filter((i) => i.kind === 'weapon').length, items: items.length,
